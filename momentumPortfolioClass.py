@@ -6,8 +6,12 @@ from iexfinance.stocks import get_historical_data
 import datetime
 from tqdm import tqdm
 import warnings
+from findLiquidity import TestApp
+from findLiquidity import main
 
 import seaborn as sns
+from time import time
+
 
 
 sns.set_style("darkgrid")
@@ -247,6 +251,7 @@ class momentum_algo():
         cut = 1
         for stock in pricing_data.columns[::cut]:
             stock_pricing = pricing_data[stock]
+
             for day in np.arange(momentum_window,len(pricing_data.index),momentum_window):
 
                 x_data = np.arange(momentum_window)
@@ -262,72 +267,78 @@ class momentum_algo():
 
 
 
+
+
             i = i+1
             if i%25 == 0:
                 print(str(i) + "/" + str(len(pricing_data.columns)))
 
 
-            momentum_data.ffill(inplace = True, axis = 0)
-            r2_data.ffill(inplace = True, axis = 0)
-            r2_data.fillna(0, inplace = True)
-            momentum_data.fillna(0, inplace = True)
+        momentum_data.ffill(inplace = True, axis = 0)
+        r2_data.ffill(inplace = True, axis = 0)
+        r2_data.fillna(0, inplace = True)
+        momentum_data.fillna(0, inplace = True)
 
 
-                #change up the momentum_switch
+            #change up the momentum_switch
 
 
-            def top_momentum(row):
-                top_number = 10
-                threshold = row.sort_values(ascending=False)[top_number]
-                new_row = []
-                for weight in row:
-                    if weight > threshold:
-                        new_row.append(weight)
-                    else:
-                        new_row.append(0)
-                return new_row
+#             def top_momentum(row):
+#                 top_number = 10
+#                 threshold = row.sort_values(ascending=False)[top_number]
+#                 new_row = []
+#                 for weight in row:
+#                     if weight > threshold:
+#                         new_row.append(weight)
+#                     else:
+#                         new_row.append(0)
+#                 return new_row
 
-            #momentum_data = momentum_data.apply(top_momentum, axis = 1)
-
-
-
-
-            for stock in pricing_data.columns[::cut]:
-                trade_signals[stock + '_signal'] = np.where(momentum_data[stock+'_momentum'] > momentum_switch, 1, 0)
-                r2_data[stock + '_r2'] = r2_data[stock+'_r2']*trade_signals[stock + '_signal']
-
-                pct_change_data[stock + '_pct_change'] = pricing_data[stock].pct_change()
-
-
-            def normalize_r2(row):
-                new_row = row/sum(row)
-
-                return new_row
-            r2_data = r2_data.apply(normalize_r2, axis=1)
-            for stock in pricing_data.columns[::cut]:
-                returns_data[stock + '_returns'] = pct_change_data[stock + '_pct_change'].shift(-1) * r2_data[stock + '_r2']
+        #momentum_data = momentum_data.apply(top_momentum, axis = 1)
 
 
 
 
+        for stock in pricing_data.columns[::cut]:
+            trade_signals[stock + '_signal'] = np.where(momentum_data[stock+'_momentum'] > momentum_switch, 1, 0)
+            r2_data[stock + '_r2'] = r2_data[stock+'_r2']*trade_signals[stock + '_signal']
+
+            pct_change_data[stock + '_pct_change'] = pricing_data[stock].pct_change()
 
 
-            cum_data = returns_data
-            cum_data['daily_returns'] = cum_data.sum(axis = 1)
-            cum_data['daily_returns_cum'] = cum_data['daily_returns'].cumsum()
+        def normalize_r2(row):
+            new_row = row/sum(row)
+
+            return new_row
+        r2_data = r2_data.apply(normalize_r2, axis=1)
+        for stock in pricing_data.columns[::cut]:
+            returns_data[stock + '_returns'] = pct_change_data[stock + '_pct_change'].shift(-1) * r2_data[stock + '_r2']
 
 
-            self.r2_data = r2_data
 
-            self.cum_data = cum_data
-        if self.place_trades():
+
+
+
+        cum_data = returns_data
+        cum_data['daily_returns'] = cum_data.sum(axis = 1)
+        cum_data['daily_returns_cum'] = cum_data['daily_returns'].cumsum()
+
+
+        self.r2_data = r2_data
+
+        self.cum_data = cum_data
+        self.trade_signals = trade_signals
+        if self.place_trades:
             self.trades()
 
 
 
 
     def trades(self):
-        portfolio_value = 1000000#get from robinhood
+        portvalue = main()
+
+        portfolio_value = portvalue#get from Interactive Brokers
+        print(portfolio_value)
 
         try:
             orders = pd.read_excel('orders.xlsx')
@@ -382,7 +393,7 @@ class momentum_algo():
         trades = []
         for x in range(len(row)):
             mvalue = row[x]*portfolio_value
-            shares = mvalue/pricing_data.iloc[-1][x]
+            shares = mvalue/self.pricing_data.iloc[-1][x]
             trades.append(shares)
 
         return trades
@@ -399,11 +410,12 @@ class momentum_algo():
         for symbol, order in  zip(new_orders.iloc[-1].index, new_orders.iloc[-1]):
             if order > 1:
 
-                order_dict[symbol] = [order, "BUY"]
+                order_dict[symbol[:-3]] = [round(order,2), "BUY"]
             if order <-1:
-                order_dict[symbol]= [order, "SELL"]
+                order_dict[symbol[:-3]]= [round(order,2), "SELL"]
+        print(order_dict)
         self.stat_plot()
-        return order_dict
+
 
 
 
@@ -413,12 +425,13 @@ class momentum_algo():
         number_positions = pd.DataFrame(index = self.pricing_data.index, columns = ['POSITIONS'])
         for x in range(len(number_positions.index)):
 
-            row=trade_signals.iloc[x]
+            row=self.trade_signals.iloc[x]
             num_pos = len(row[row>0])
 
             number_positions.iat[x,0] = num_pos
 
         stock = 'AAPL'
+
 
         portfolio = (self.cum_data[self.cum_data.columns[-1]] + 1)
         stock_info = (self.pricing_data[stock]/self.pricing_data[stock].iloc[0])
@@ -427,8 +440,9 @@ class momentum_algo():
         stock_info.pct_change().dropna()[1:].std()
         portfolio_vol = portfolio.pct_change().dropna()[1:].std()
 
-        spy = pd.DataFrame(get_historical_data("SPY", start= start, end = end, token = key, close_only=True)).T['close']
+        spy = pd.DataFrame(get_historical_data("SPY", start= self.start, end = datetime.datetime.today(), token = self.key, close_only=True)).T['close']
         spy.index = pd.to_datetime(spy.index)
+
 
 
 
@@ -472,8 +486,8 @@ class momentum_algo():
 
         #positions.groupby(["POSITION"]).mean().sort_values('PERCENTAGE',ascending= True)[-100:].plot.bar(figsize = (20,10))
 
-        r2_data.iloc[25][:-2].sort_values(ascending = False)[0]
-        portfolio.pct_change().dropna()[1:].std()
+        #r2_data.iloc[25][:-2].sort_values(ascending = False)[0]
+        #portfolio.pct_change().dropna()[1:].std()
         #positions.plot.bar()
 
 
